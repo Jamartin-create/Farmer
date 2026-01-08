@@ -1,13 +1,76 @@
-# The Farmer Was Replaced — 种植/收获规则速查
+# The Farmer Was Replaced — 自动化脚本文档
 
-本目录是 `The Farmer Was Replaced` 的脚本存档（入口：`main.py`）。本文档整理“种子/作物”相关规则，方便你在改 `do_plant.py` 或新增策略时对照实现。
+本目录是 `The Farmer Was Replaced` 的脚本存档（入口：`main.py`）。本文档包含游戏规则速查和代码架构说明。
+
+## 代码架构
+
+### 模块化设计（前缀组织）
+
+由于游戏不支持文件夹结构，代码通过文件名前缀进行逻辑分组：
+
+#### 核心模块（core_）
+- `core_plant_controller.py`：主控制器，`plant_something()` 入口
+- `core_zone_classifier.py`：区域分类器，判断坐标属于哪个区域
+- `core_zone_config.py`：区域配置，支持动态调整区域边界/优先级
+- `core_plant_executor.py`：底层种植动作（ensure_soil, plant_xxx）
+- `core_debug.py`：调试工具，统一的 debug_print 和开关控制
+
+#### 状态管理（state_）
+- `state_manager.py`：所有全局状态变量集中管理
+- `state_resource_monitor.py`：资源监控，为动态配置提供决策依据
+
+#### 区域模块（zones_）
+- `zones_pumpkin_zone.py`：南瓜区，合并策略 + 成熟度检测
+- `zones_support_zone.py`：供给区，胡萝卜环带
+- `zones_cactus_zone.py`：仙人掌区，排序连锁收获
+- `zones_mixed_zone.py`：混合区，树 + 向日葵 + 草（棋盘格）
+- `zones_maze_zone.py`：迷宫区，生成 + DFS 导航
+
+#### 特性模块（features_）
+- `features_companion.py`：伴生植物系统，跨区域需求管理
+- `features_fertilizer.py`：肥料策略，施肥时机 + 感染管理
+
+#### 原有文件
+- `main.py`：程序入口
+- `do_move.py`：移动控制器（普通模式 + 迷宫模式）
+- `map_manage.py`：本地地图缓存
+- `utils.py`：工具函数
+- `consts.py`：常量配置
+
+### 动态区域配置
+
+支持根据资源情况动态调整区域：
+
+```python
+# 在 core_zone_config.py 中修改配置
+zone_enabled['maze'] = False  # 禁用迷宫区
+zone_size_factor['support_ring_width'] = 2  # 扩大供给环带
+```
+
+每 100 步自动调用 `apply_dynamic_adjustments()` 根据资源情况调整。
+
+### 调试模式
+
+在 `core_debug.py` 中设置 `DEBUG_MODE = True` 开启调试输出：
+
+```python
+# 所有模块使用 debug_print() 替代 quick_print()
+from core_debug import debug_print
+debug_print("Zone:", zone, "at", x, y)
+```
 
 ## 文档目录（docs）
 
-- `docs/pumpkin_strategy.md`：南瓜策略（小地图动态合并区版，含 \(m=n-\lfloor n/2\rfloor\)）
+- `docs/pumpkin_strategy.md`：南瓜策略（动态合并区，含 \(m=n-\lfloor n/2\rfloor\)）
 - `docs/farm_layout.md`：农场分区策略（南瓜 + 多作物混种）
 - `docs/water_fertilizer_sunflower.md`：水 / 肥料 / 向日葵（规则与实战建议）
-- `docs/companion_mixed_planting.md`：混合种植 / 伴生植物（Companion）— 提升产量的实现方案
+- `docs/companion_mixed_planting.md`：混合种植 / 伴生植物（Companion）
+- `docs/cactus_strategy.md`：仙人掌策略（排序连锁）
+- `docs/maze_strategy.md`：迷宫策略（生成与导航）
+
+---
+
+# 游戏规则速查
 
 ## 胡萝卜（Carrot）
 
@@ -74,7 +137,35 @@
   - 每在其正北/正东/正西/正南的地块上种植一棵树，都会使其生长时间**翻倍**。
   - 如果每个地块都种树，生长时间将是原来的 \(2\times2\times2\times2 = 16\) 倍。
 
-## 本仓库现有脚本提示
+## 代码实现要点
 
-- `do_plant.py` 目前的实现是“按坐标规则收获后补种”（例如对 `x==y` / `x==0` / `x==1 or 2` 等分支做不同种植）。
-- 如果你要把上面的规则落地到代码里，关键点通常是：**只在需要耕地的作物上确保 `Grounds.Soil`，并避免 `till()` 误触发二次切回草地**。
+### 区域划分逻辑
+
+- **南瓜区**（左上角 m×m）：等待全区成熟后收割巨型南瓜，快速补种枯萎南瓜
+- **供给环带**（贴着南瓜区外沿）：种植胡萝卜供给南瓜消耗，宽度可动态调整
+- **仙人掌区**（南瓜区右侧）：利用排序连锁机制收获
+- **迷宫区**（右下角）：生成迷宫并使用 DFS 导航至宝藏
+- **混合区**（其他区域）：棋盘格分配树/向日葵/草
+
+区域优先级：南瓜 > 迷宫 > 供给 > 仙人掌 > 混合
+
+### 关键机制
+
+- **耕地开关**：`till()` 会在 Grassland ↔ Soil 之间切换，必须先检查 `get_ground_type()`
+- **枯萎南瓜处理**：直接 `plant()` 覆盖，不要尝试 `harvest()`
+- **向日葵 8 倍能量**：维护花瓣缓存，只收最大花瓣数（需 ≥10 株）
+- **伴生植物**：跨区域收集需求，按优先级分配（避免占用南瓜区）
+- **肥料感染**：只对 Carrot/Cactus 施肥，获取 Weird_Substance 用于迷宫
+
+### 添加新区域
+
+1. 在 `zones_xxx.py` 创建新模块，实现 `handle_cell(x, y, m, n)` 函数
+2. 在 `core_zone_classifier.py` 添加区域判断逻辑
+3. 在 `core_zone_config.py` 添加启用开关和优先级
+4. 在 `core_plant_controller.py` 添加分发逻辑
+
+### 调试技巧
+
+- 开启调试模式查看每格的区域分类和操作
+- 使用 `state_resource_monitor.py` 查看资源统计
+- 通过 `core_zone_config.py` 临时禁用某些区域进行测试
