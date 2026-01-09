@@ -61,10 +61,13 @@ def _generate_maze_if_needed():
 		debug_print("Maze zone: Insufficient Weird_Substance (", num_items(Items.Weird_Substance), "/", substance_needed, ")")
 		return False
 
-	# 确保当前位置是灌木
+	# 需要种迷宫时，直接种灌木，并等待其成熟后直接种植
 	if entity != Entities.Bush:
+		if can_harvest():
+			harvest()
 		plant_bush()
-		return False
+		while can_harvest():
+			continue
 
 	# 生成迷宫
 	use_item(Items.Weird_Substance, substance_needed)
